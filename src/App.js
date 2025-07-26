@@ -1,22 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, addDoc, onSnapshot, query, Timestamp, writeBatch, deleteDoc, updateDoc, serverTimestamp, arrayUnion, setLogLevel } from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, sendPasswordResetEmail } from 'firebase/auth';
+import { getFirestore, collection, doc, addDoc, onSnapshot, query, Timestamp, writeBatch, deleteDoc, updateDoc, serverTimestamp, arrayUnion, setLogLevel, getDoc, setDoc } from 'firebase/firestore';
 
-// --- Konfigurasi Firebase (dari .env file) ---
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.REACT_APP_FIREBASE_APP_ID
-};
-const appId = firebaseConfig.projectId; // Ambil appId dari config
+// --- Konfigurasi Firebase (Disediakan oleh lingkungan) ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'tracking-bm-kopi';
 
 
 // --- Data Awal (jika database kosong) ---
-const INITIAL_PRODUCTS = ["Kopi Gula Aren", "Coklat", "Americano", "Greentea"];
+const INITIAL_PRODUCTS = [
+    { name: "Kopi Gula Aren", price: 8000 },
+    { name: "Coklat", price: 8000 },
+    { name: "Americano", price: 8000 },
+    { name: "Greentea", price: 8000 }
+];
 const INITIAL_PARTNERS = [
     "JIH", "IPIN", "BAROKAH", "MARGONO", "TELKOM", "RSDK", "BIOLOGI", "PERTANIAN",
     "ENJOY", "BIOLOGI 2", "PERTANIAN 2", "SINAR KASIH", "PERUM MAS AFIF", "DIMSUM",
@@ -25,7 +23,6 @@ const INITIAL_PARTNERS = [
     "FACHRUDIN TOWER", "PSIKOLOGI UMP", "LPPH HUKUM UNSOED"
 ];
 const INITIAL_EMPLOYEES = ["Gigih", "Fajar", "Pandu", "Ade"];
-const PRODUCT_PRICE = 8000;
 
 // --- Fungsi Utilitas untuk Ekstrak CSV ---
 const exportToCSV = (data, filename) => {
@@ -56,6 +53,48 @@ const exportToCSV = (data, filename) => {
     document.body.removeChild(link);
 };
 
+const exportCanvasingToCSV = (data, filename) => {
+    if (data.length === 0) {
+        console.log("Tidak ada data canvasing untuk diekstrak.");
+        return;
+    }
+    const headers = ['Tanggal Absen', 'Karyawan', 'Waktu Kunjungan', 'Lokasi Kunjungan', 'Catatan'];
+    const rows = [];
+
+    data.forEach(attendance => {
+        const attendanceDate = attendance.clockInTime?.toDate().toLocaleDateString('id-ID') || 'N/A';
+        const employeeName = attendance.employeeName;
+        
+        const visits = attendance.journey?.filter(j => j.type === 'visit') || [];
+        
+        if (visits.length === 0) {
+            rows.push([`"${attendanceDate}"`, `"${employeeName}"`, '"-"', '"-"', '"Tidak ada kunjungan"']);
+        } else {
+            visits.forEach(visit => {
+                const visitTimestamp = visit.timestamp?.toDate ? visit.timestamp.toDate().toLocaleString('id-ID') : 'N/A';
+                rows.push([
+                    `"${attendanceDate}"`,
+                    `"${employeeName}"`,
+                    `"${visitTimestamp}"`,
+                    `"${visit.location || ''}"`,
+                    `"${(visit.notes || '').replace(/"/g, '""')}"`
+                ]);
+            });
+        }
+    });
+
+    const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
+    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${filename}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+};
+
 
 // --- Komponen-komponen Aplikasi ---
 
@@ -65,7 +104,6 @@ const MainMenu = ({ setView, consignmentList, returnList, allProducts }) => (
             consignmentList={consignmentList} 
             returnList={returnList} 
             allProducts={allProducts} 
-            productPrice={PRODUCT_PRICE} 
         />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <MenuCard 
@@ -114,7 +152,10 @@ const MenuCard = ({ title, description, icon, onClick }) => (
 
 const Header = () => (
     <header className="bg-white shadow-md rounded-lg p-4 flex items-center">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-blue-600" viewBox="0 0 20 20" fill="currentColor"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" /><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2H6zM8 7a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1zm-1 4a1 1 0 100 2h4a1 1 0 100-2H7z" /></svg>
+        <svg className="h-10 w-10 text-blue-600" viewBox="0 0 64 64" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M32,1C14.88,1,1,14.88,1,32s13.88,31,31,31s31-13.88,31-31S49.12,1,32,1z M32,57.7C17.84,57.7,6.3,46.16,6.3,32 C6.3,17.84,17.84,6.3,32,6.3C46.16,6.3,57.7,17.84,57.7,32C57.7,46.16,46.16,57.7,32,57.7z"/>
+            <path d="M32.01,12.21c-8.23,0-16.46,10.59-16.46,19.79s8.23,19.79,16.46,19.79s16.46-10.59,16.46-19.79S40.24,12.21,32.01,12.21z"/>
+        </svg>
         <div className="ml-4">
             <h1 className="text-2xl font-bold text-gray-800">Aplikasi Induk BM Kopi</h1>
             <p className="text-sm text-gray-500">Sistem Manajemen Terpadu untuk Operasional dan Marketing.</p>
@@ -199,14 +240,14 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
         <div className="bg-white p-6 rounded-lg shadow-md h-full">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Input Data Dropping</h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-                <SelectInput id="officer" label="Nama Petugas (Wajib)" value={officerName} onChange={(e) => setOfficerName(e.target.value)} options={employees} placeholder="Pilih Nama Petugas..." />
-                <SearchableSelect label="Mitra" options={partners} value={partner} onChange={setPartner} placeholder="Cari & Pilih Mitra..." />
+                <SelectInput id="officer" label="Nama Petugas (Wajib)" value={officerName} onChange={(e) => setOfficerName(e.target.value)} options={employees.map(e => e.name)} placeholder="Pilih Nama Petugas..." />
+                <SearchableSelect label="Mitra" options={partners.map(p => p.name)} value={partner} onChange={setPartner} placeholder="Cari & Pilih Mitra..." />
                 <hr/>
                 <div className="space-y-3">
                     {items.map((item, index) => (
                         <div key={index} className="flex items-end space-x-2 p-2 bg-slate-50 rounded-md">
                             <div className="flex-grow">
-                                <SelectInput id={`product-${index}`} label={`Produk ${index + 1}`} value={item.product} onChange={(e) => handleItemChange(index, 'product', e.target.value)} options={products} placeholder="Pilih Produk..." />
+                                <SelectInput id={`product-${index}`} label={`Produk ${index + 1}`} value={item.product} onChange={(e) => handleItemChange(index, 'product', e.target.value)} options={products.map(p => p.name)} placeholder="Pilih Produk..." />
                             </div>
                             <div className="w-24">
                                 <label htmlFor={`quantity-${index}`} className="block text-sm font-medium text-gray-600">Jumlah</label>
@@ -307,14 +348,14 @@ const ReturnForm = ({ db, appId, disabled, products, partners, employees }) => {
         <div className="bg-white p-6 rounded-lg shadow-md h-full">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Input Data Return</h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-                <SelectInput id="officer" label="Nama Petugas (Wajib)" value={officerName} onChange={(e) => setOfficerName(e.target.value)} options={employees} placeholder="Pilih Nama Petugas..." />
-                <SearchableSelect label="Mitra Pengembali" options={partners} value={partner} onChange={setPartner} placeholder="Cari & Pilih Mitra..." />
+                <SelectInput id="officer" label="Nama Petugas (Wajib)" value={officerName} onChange={(e) => setOfficerName(e.target.value)} options={employees.map(e => e.name)} placeholder="Pilih Nama Petugas..." />
+                <SearchableSelect label="Mitra Pengembali" options={partners.map(p => p.name)} value={partner} onChange={setPartner} placeholder="Cari & Pilih Mitra..." />
                 <hr/>
                 <div className="space-y-3">
                     {items.map((item, index) => (
                         <div key={index} className="flex items-end space-x-2 p-2 bg-slate-50 rounded-md">
                             <div className="flex-grow">
-                                <SelectInput id={`product-${index}`} label={`Produk ${index + 1}`} value={item.product} onChange={(e) => handleItemChange(index, 'product', e.target.value)} options={products} placeholder="Pilih Produk..." />
+                                <SelectInput id={`product-${index}`} label={`Produk ${index + 1}`} value={item.product} onChange={(e) => handleItemChange(index, 'product', e.target.value)} options={products.map(p => p.name)} placeholder="Pilih Produk..." />
                             </div>
                             <div className="w-24">
                                 <label htmlFor={`quantity-${index}`} className="block text-sm font-medium text-gray-600">Jumlah</label>
@@ -339,29 +380,43 @@ const ReturnForm = ({ db, appId, disabled, products, partners, employees }) => {
 };
 
 
-const FilterAndExportPanel = ({ filters, setFilters, allProducts, allPartners, allEmployees, dataToExport }) => {
+const FilterAndExportPanel = ({ filters, setFilters, allProducts, allPartners, allEmployees, dataToExport, onExport, dataType, setDataType }) => {
     const handleFilterChange = (name, value) => {
         setFilters(prev => ({ ...prev, [name]: value }));
     };
-    const handleExport = () => {
-        const date = new Date().toISOString().slice(0, 10);
-        exportToCSV(dataToExport, `laporan_penitipan_${date}`);
-    };
+
     const resetFilters = () => {
         setFilters({ startDate: '', endDate: '', product: '', partner: '', officer: '' });
     };
+
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Filter dan Ekstrak Data</h2>
+            
+            <div className="mb-4 flex space-x-2 border-b">
+                <button 
+                    onClick={() => setDataType('dropping')} 
+                    className={`py-2 px-4 font-medium text-sm ${dataType === 'dropping' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500'}`}
+                >
+                    Data Dropping
+                </button>
+                <button 
+                    onClick={() => setDataType('return')} 
+                    className={`py-2 px-4 font-medium text-sm ${dataType === 'return' ? 'border-b-2 border-orange-600 text-orange-600' : 'text-gray-500'}`}
+                >
+                    Data Return
+                </button>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 <DateInput label="Dari Tanggal" name="startDate" value={filters.startDate} onChange={(e) => handleFilterChange(e.target.name, e.target.value)} />
                 <DateInput label="Sampai Tanggal" name="endDate" value={filters.endDate} onChange={(e) => handleFilterChange(e.target.name, e.target.value)} />
-                <SelectInput id="filter-product" label="Produk" value={filters.product} onChange={(e) => handleFilterChange('product', e.target.value)} options={allProducts} placeholder="Semua Produk" />
-                <SearchableSelect label="Mitra" options={allPartners} value={filters.partner} onChange={(value) => handleFilterChange('partner', value)} placeholder="Cari & Pilih Mitra..." />
-                <SelectInput id="filter-officer" label="Petugas" value={filters.officer} onChange={(e) => handleFilterChange('officer', e.target.value)} options={allEmployees} placeholder="Semua Petugas" />
+                <SelectInput id="filter-product" label="Produk" value={filters.product} onChange={(e) => handleFilterChange('product', e.target.value)} options={allProducts.map(p => p.name)} placeholder="Semua Produk" />
+                <SearchableSelect label="Mitra" options={allPartners.map(p => p.name)} value={filters.partner} onChange={(value) => handleFilterChange('partner', value)} placeholder="Cari & Pilih Mitra..." />
+                <SelectInput id="filter-officer" label="Petugas" value={filters.officer} onChange={(e) => handleFilterChange('officer', e.target.value)} options={allEmployees.map(e => e.name)} placeholder="Semua Petugas" />
             </div>
             <div className="mt-6 flex flex-col sm:flex-row gap-2">
-                <button onClick={handleExport} className="w-full sm:w-auto flex-grow bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                <button onClick={onExport} className="w-full sm:w-auto flex-grow bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
                     Ekstrak ke CSV ({dataToExport.length} data)
                 </button>
                  <button onClick={resetFilters} className="w-full sm:w-auto bg-gray-500 text-white py-2 px-4 rounded-md hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400">
@@ -372,14 +427,14 @@ const FilterAndExportPanel = ({ filters, setFilters, allProducts, allPartners, a
     );
 };
 
-const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, data, loading, onDeleteRequest }) => {
+const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, allProducts, adminConfig, auth, attendanceData }) => {
     const [isLocked, setIsLocked] = useState(!isManagerMode);
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
-    const correctPassword = "bos123";
-
+    const [message, setMessage] = useState({type: '', text: ''});
+    
     const handleUnlock = () => {
-        if (password === correctPassword) {
+        if (password === adminConfig.password) {
             setIsLocked(false);
             setError('');
             setPassword('');
@@ -399,26 +454,46 @@ const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, data
             handleUnlock();
         }
     };
+    
+    const handleResetPassword = async () => {
+        setMessage({type: '', text: ''});
+        const email = "kontekfajar@gmail.com";
+        try {
+            await sendPasswordResetEmail(auth, email);
+            setMessage({type: 'success', text: `Link reset password telah dikirim ke ${email}.`});
+        } catch (error) {
+            console.error("Error sending password reset email:", error);
+            setMessage({type: 'error', text: `Gagal mengirim email. Pastikan Anda login dengan akun email, bukan anonim. Error: ${error.message}`});
+        }
+    };
 
     if (isLocked) {
         return (
-            <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="bg-white p-6 rounded-lg shadow-md max-w-md mx-auto">
                 <h2 className="text-xl font-bold text-gray-700 mb-4">Dashboard Admin (Terkunci)</h2>
                 <p className="text-gray-600 mb-4">Masukkan password untuk mengakses semua fitur admin.</p>
-                <div className="flex items-center space-x-2">
-                    <input
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        placeholder="Masukkan password..."
-                        className="flex-grow p-2 border border-gray-300 rounded-md shadow-sm"
-                    />
-                    <button onClick={handleUnlock} className="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700">
-                        Buka
-                    </button>
+                <div className="space-y-4">
+                    <div className="flex items-center space-x-2">
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            onKeyPress={handleKeyPress}
+                            placeholder="Masukkan password..."
+                            className="flex-grow p-2 border border-gray-300 rounded-md shadow-sm"
+                        />
+                        <button onClick={handleUnlock} className="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700">
+                            Buka
+                        </button>
+                    </div>
+                    <div className="text-center">
+                        <button onClick={handleResetPassword} className="text-sm text-blue-600 hover:underline">
+                            Lupa Password?
+                        </button>
+                    </div>
                 </div>
                 {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+                {message.text && <FormMessage type={message.type} text={message.text} />}
             </div>
         );
     }
@@ -439,10 +514,138 @@ const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, data
                 </div>
             </div>
             
-            <HistoryTable data={data} loading={loading} isManagerMode={isManagerMode} onDeleteRequest={onDeleteRequest} />
+            <ManageProducts db={db} appId={appId} allProducts={allProducts} />
+            <ManagePassword db={db} appId={appId} adminConfig={adminConfig} />
+            <CanvasingAdminDashboard db={db} appId={appId} attendanceData={attendanceData} />
         </div>
     );
 };
+
+const ManageProducts = ({ db, appId, allProducts }) => {
+    const [productPrices, setProductPrices] = useState({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [message, setMessage] = useState({type: '', text: ''});
+
+    useEffect(() => {
+        const prices = {};
+        allProducts.forEach(p => {
+            prices[p.id] = p.price || 0;
+        });
+        setProductPrices(prices);
+    }, [allProducts]);
+
+    const handlePriceChange = (productId, newPrice) => {
+        setProductPrices(prev => ({...prev, [productId]: newPrice}));
+    };
+
+    const handleSubmit = async () => {
+        setIsSubmitting(true);
+        setMessage({type: '', text: ''});
+        try {
+            const batch = writeBatch(db);
+            Object.entries(productPrices).forEach(([productId, price]) => {
+                if (productId) { // Pastikan ID produk ada
+                    const docRef = doc(db, `artifacts/${appId}/public/data/products`, productId);
+                    batch.update(docRef, { price: Number(price) });
+                }
+            });
+            await batch.commit();
+            setMessage({type: 'success', text: 'Harga produk berhasil diperbarui!'});
+        } catch (error) {
+            console.error("Error updating prices: ", error);
+            setMessage({type: 'error', text: 'Gagal memperbarui harga.'});
+        } finally {
+            setIsSubmitting(false);
+            setTimeout(() => setMessage({type: '', text: ''}), 3000);
+        }
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-xl font-bold text-gray-700 mb-4">Pengelolaan Harga Produk</h2>
+            <div className="space-y-3">
+                {allProducts.filter(p => p.id).map(product => ( // Hanya tampilkan produk dari DB
+                    <div key={product.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
+                        <span className="font-medium text-gray-800">{product.name}</span>
+                        <div className="flex items-center space-x-2">
+                            <span className="text-gray-500">Rp</span>
+                            <input 
+                                type="number" 
+                                value={productPrices[product.id] || ''}
+                                onChange={(e) => handlePriceChange(product.id, e.target.value)}
+                                className="w-32 p-1 border border-gray-300 rounded-md shadow-sm"
+                            />
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <button onClick={handleSubmit} disabled={isSubmitting} className="mt-4 w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                {isSubmitting ? 'Menyimpan...' : 'Simpan Semua Perubahan Harga'}
+            </button>
+            {message.text && <FormMessage type={message.type} text={message.text} />}
+        </div>
+    );
+};
+
+const ManagePassword = ({ db, appId, adminConfig }) => {
+    const [oldPassword, setOldPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [message, setMessage] = useState({type: '', text: ''});
+
+    const handleChangePassword = async () => {
+        setMessage({type: '', text: ''});
+        if (oldPassword !== adminConfig.password) {
+            setMessage({type: 'error', text: 'Password lama salah.'});
+            return;
+        }
+        if (!newPassword || newPassword.length < 6) {
+            setMessage({type: 'error', text: 'Password baru minimal 6 karakter.'});
+            return;
+        }
+        setIsSubmitting(true);
+        try {
+            const configRef = doc(db, `artifacts/${appId}/public/data/config`, 'admin');
+            await updateDoc(configRef, { password: newPassword });
+            setOldPassword('');
+            setNewPassword('');
+            setMessage({type: 'success', text: 'Password berhasil diubah!'});
+        } catch (error) {
+            console.error("Error changing password:", error);
+            setMessage({type: 'error', text: 'Gagal mengubah password.'});
+        } finally {
+            setIsSubmitting(false);
+            setTimeout(() => setMessage({type: '', text: ''}), 3000);
+        }
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-xl font-bold text-gray-700 mb-4">Pengelolaan Password Admin</h2>
+            <div className="space-y-4">
+                <input 
+                    type="password" 
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                    placeholder="Password Lama"
+                    className="w-full p-2 border border-gray-300 rounded-md"
+                />
+                <input 
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Password Baru"
+                    className="w-full p-2 border border-gray-300 rounded-md"
+                />
+                <button onClick={handleChangePassword} disabled={isSubmitting} className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
+                    {isSubmitting ? 'Mengubah...' : 'Ubah Password'}
+                </button>
+            </div>
+             {message.text && <FormMessage type={message.type} text={message.text} />}
+        </div>
+    );
+};
+
 
 const AddItemForm = ({ db, appId, disabled, collectionName, itemName, placeholder }) => {
     const [name, setName] = useState('');
@@ -456,7 +659,11 @@ const AddItemForm = ({ db, appId, disabled, collectionName, itemName, placeholde
         }
         setIsSubmitting(true);
         try {
-            await addDoc(collection(db, `artifacts/${appId}/public/data/${collectionName}`), { name: name.trim() });
+            const data = { name: name.trim() };
+            if (collectionName === 'products') {
+                data.price = 8000; // Harga default untuk produk baru
+            }
+            await addDoc(collection(db, `artifacts/${appId}/public/data/${collectionName}`), data);
             setName('');
             setMessage({ type: 'success', text: `${itemName} berhasil ditambahkan!` });
             setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -481,43 +688,46 @@ const AddItemForm = ({ db, appId, disabled, collectionName, itemName, placeholde
     );
 };
 
-const SummaryCard = ({ consignmentList, returnList, allProducts, productPrice }) => {
+const SummaryCard = ({ consignmentList, returnList, allProducts }) => {
     const formatCurrency = (value) => {
         return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(value);
     };
 
     const { netStockSummary, totalValue } = useMemo(() => {
-        const summary = allProducts.reduce((acc, prod) => ({ ...acc, [prod]: 0 }), {});
+        const productMap = allProducts.reduce((map, prod) => {
+            map[prod.name] = { stock: 0, price: prod.price || 0 };
+            return map;
+        }, {});
         
         consignmentList.forEach(item => {
-            if (summary.hasOwnProperty(item.namaProduk)) {
-                summary[item.namaProduk] += item.jumlah;
+            if (productMap[item.namaProduk]) {
+                productMap[item.namaProduk].stock += item.jumlah;
             }
         });
 
         returnList.forEach(item => {
-            if (summary.hasOwnProperty(item.namaProduk)) {
-                summary[item.namaProduk] -= item.jumlah;
+            if (productMap[item.namaProduk]) {
+                productMap[item.namaProduk].stock -= item.jumlah;
             }
         });
 
-        const total = Object.values(summary).reduce((acc, current) => acc + (current * productPrice), 0);
-
-        return { netStockSummary: summary, totalValue: total };
-    }, [consignmentList, returnList, allProducts, productPrice]);
+        const total = Object.values(productMap).reduce((acc, {stock, price}) => acc + (stock * price), 0);
+        
+        return { netStockSummary: productMap, totalValue: total };
+    }, [consignmentList, returnList, allProducts]);
 
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
             <h2 className="text-xl font-bold text-gray-700 mb-4">Total Stok Bersih Dititipkan</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                {Object.entries(netStockSummary).map(([name, total]) => (
+                {Object.entries(netStockSummary).map(([name, {stock, price}]) => (
                     <div key={name} className="bg-slate-50 p-4 rounded-lg text-center flex flex-col justify-between">
                         <div>
                            <p className="text-sm text-gray-600 truncate" title={name}>{name}</p>
-                           <p className="text-2xl font-bold text-blue-600">{total}</p>
+                           <p className="text-2xl font-bold text-blue-600">{stock}</p>
                         </div>
                         <div className="mt-2">
-                            <p className="text-xs text-green-700 font-semibold bg-green-100 rounded-full px-2 py-1">{formatCurrency(total * productPrice)}</p>
+                            <p className="text-xs text-green-700 font-semibold bg-green-100 rounded-full px-2 py-1">{formatCurrency(stock * price)}</p>
                         </div>
                     </div>
                 ))}
@@ -531,14 +741,14 @@ const SummaryCard = ({ consignmentList, returnList, allProducts, productPrice })
     );
 };
 
-const HistoryTable = ({ data, loading, isManagerMode, onDeleteRequest }) => {
+const HistoryTable = ({ data, loading, isManagerMode, onDeleteRequest, title }) => {
     const formatDate = (timestamp) => {
         if (!timestamp || !timestamp.toDate) return 'N/A';
         return timestamp.toDate().toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     };
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-bold text-gray-700 mb-4">Riwayat Penitipan</h2>
+            <h2 className="text-xl font-bold text-gray-700 mb-4">{title}</h2>
             <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
@@ -566,7 +776,7 @@ const HistoryTable = ({ data, loading, isManagerMode, onDeleteRequest }) => {
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.namaPetugas}</td>
                                     {isManagerMode && (
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            <button onClick={() => onDeleteRequest({id: item.id, product: item.namaProduk, partner: item.namaMitra})} className="text-red-600 hover:text-red-900">
+                                            <button onClick={() => onDeleteRequest({id: item.id, product: item.namaProduk, partner: item.namaMitra, type: item.type})} className="text-red-600 hover:text-red-900">
                                                 Hapus
                                             </button>
                                         </td>
@@ -932,10 +1142,116 @@ const CanvasingDashboard = ({ db, appId }) => {
     );
 };
 
+const CanvasingAdminDashboard = ({ db, appId, attendanceData }) => {
+    const [expandedId, setExpandedId] = useState(null);
+    const [confirmDelete, setConfirmDelete] = useState(null); // { attendanceId, journeyIndex }
+
+    const toggleExpand = (id) => {
+        setExpandedId(expandedId === id ? null : id);
+    };
+
+    const handleDeletePhoto = async ({ attendanceId, journeyIndex }) => {
+        if (!db) return;
+        
+        const attendanceDocRef = doc(db, `artifacts/${appId}/public/data/absensi`, attendanceId);
+        try {
+            const docSnap = await getDoc(attendanceDocRef);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const updatedJourney = [...data.journey];
+                
+                if (updatedJourney[journeyIndex] && 'photo' in updatedJourney[journeyIndex]) {
+                    delete updatedJourney[journeyIndex].photo;
+                }
+
+                await updateDoc(attendanceDocRef, { journey: updatedJourney });
+                console.log("Photo deleted successfully");
+            }
+        } catch (error) {
+            console.error("Error deleting photo: ", error);
+        }
+        setConfirmDelete(null);
+    };
+
+    const handleExport = () => {
+        const date = new Date().toISOString().slice(0, 10);
+        exportCanvasingToCSV(attendanceData, `laporan_canvasing_${date}`);
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-700">Laporan Canvasing Mitra</h2>
+                <button 
+                    onClick={handleExport}
+                    className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 text-sm"
+                >
+                    Ekstrak Data Canvasing (CSV)
+                </button>
+            </div>
+            <div className="space-y-2">
+                {attendanceData.map(record => {
+                    const visits = record.journey?.filter(j => j.type === 'visit') || [];
+                    return (
+                        <div key={record.id} className="border rounded-md">
+                            <button onClick={() => toggleExpand(record.id)} className="w-full text-left p-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center">
+                                <div>
+                                    <span className="font-semibold">{record.employeeName}</span>
+                                    <span className="text-sm text-gray-600 ml-4">{record.clockInTime?.toDate().toLocaleDateString('id-ID')}</span>
+                                </div>
+                                <div className="flex items-center">
+                                     <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full mr-4">{visits.length} Kunjungan</span>
+                                     <svg className={`w-5 h-5 transition-transform ${expandedId === record.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                </div>
+                            </button>
+                            {expandedId === record.id && (
+                                <div className="p-4 border-t space-y-4">
+                                    {visits.length > 0 ? visits.map((visit, index) => {
+                                        const originalIndex = record.journey.findIndex(j => j.timestamp === visit.timestamp && j.location === visit.location);
+                                        return (
+                                            <div key={index} className="p-3 bg-slate-50 rounded-lg grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                <div className="md:col-span-2">
+                                                    <p><strong>Lokasi:</strong> {visit.location}</p>
+                                                    <p><strong>Waktu:</strong> {visit.timestamp?.toDate ? visit.timestamp.toDate().toLocaleString('id-ID') : 'N/A'}</p>
+                                                    <p className="text-sm text-gray-700 mt-2"><strong>Catatan:</strong> {visit.notes || '-'}</p>
+                                                </div>
+                                                <div>
+                                                    {visit.photo ? (
+                                                        <>
+                                                            <img src={visit.photo} alt={`Kunjungan ke ${visit.location}`} className="rounded-md w-full h-auto object-cover" />
+                                                            <button 
+                                                                onClick={() => setConfirmDelete({ attendanceId: record.id, journeyIndex: originalIndex })}
+                                                                className="mt-2 w-full text-xs bg-red-100 text-red-700 py-1 px-2 rounded-md hover:bg-red-200"
+                                                            >
+                                                                Hapus Foto
+                                                            </button>
+                                                        </>
+                                                    ) : <p className="text-sm text-gray-500 italic">Foto telah dihapus.</p>}
+                                                </div>
+                                            </div>
+                                        )
+                                    }) : <p className="text-gray-500">Tidak ada laporan kunjungan untuk tanggal ini.</p>}
+                                </div>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
+             <ConfirmationModal
+                isOpen={!!confirmDelete}
+                onClose={() => setConfirmDelete(null)}
+                onConfirm={() => handleDeletePhoto(confirmDelete)}
+                message="Apakah Anda yakin ingin menghapus foto ini? Tindakan ini tidak dapat diurungkan dan akan menghemat ruang penyimpanan."
+            />
+        </div>
+    );
+};
+
 
 // --- Komponen Utama Aplikasi ---
 export default function App() {
     const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
     
     const [consignmentList, setConsignmentList] = useState([]);
@@ -943,6 +1259,8 @@ export default function App() {
     const [dbProducts, setDbProducts] = useState([]);
     const [dbPartners, setDbPartners] = useState([]);
     const [dbEmployees, setDbEmployees] = useState([]);
+    const [attendanceData, setAttendanceData] = useState([]);
+    const [adminConfig, setAdminConfig] = useState({ password: "bos123" });
     
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -957,6 +1275,7 @@ export default function App() {
         partner: '',
         officer: '',
     });
+    const [dataType, setDataType] = useState('dropping'); // 'dropping' or 'return'
 
     // Efek untuk inisialisasi Firebase dan otentikasi
     useEffect(() => {
@@ -970,6 +1289,7 @@ export default function App() {
             const firestoreDb = getFirestore(app);
             const authInstance = getAuth(app);
             setDb(firestoreDb);
+            setAuth(authInstance);
             setLogLevel('debug');
 
             const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
@@ -977,12 +1297,11 @@ export default function App() {
                     setIsAuthReady(true);
                 } else {
                     try {
-                       try {
-    await signInAnonymously(authInstance);
-} catch (authError) {
-    console.error("Gagal login anonim:", authError);
-    setError("Gagal melakukan otentikasi. " + authError.message);
-}
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(authInstance, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(authInstance);
+                        }
                     } catch (authError) {
                         console.error("Authentication error:", authError);
                         setError("Gagal melakukan otentikasi. " + authError.message);
@@ -1009,14 +1328,15 @@ export default function App() {
             products: { path: `artifacts/${appId}/public/data/products`, setter: setDbProducts },
             partners: { path: `artifacts/${appId}/public/data/partners`, setter: setDbPartners },
             employees: { path: `artifacts/${appId}/public/data/employees`, setter: setDbEmployees },
+            absensi: { path: `artifacts/${appId}/public/data/absensi`, setter: setAttendanceData },
         };
 
         const unsubscribes = Object.entries(collections).map(([key, { path, setter }]) => {
             const q = query(collection(db, path));
             return onSnapshot(q, (querySnapshot) => {
                 const items = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                if (key === 'penitipan' || key === 'pengembalian') {
-                    items.sort((a, b) => (b.tanggal?.toDate() || 0) - (a.tanggal?.toDate() || 0));
+                if (key === 'penitipan' || key === 'pengembalian' || key === 'absensi') {
+                    items.sort((a, b) => ((b.tanggal?.toDate() || b.clockInTime?.toDate() || 0) - (a.tanggal?.toDate() || a.clockInTime?.toDate() || 0)));
                 }
                 setter(items);
             }, (err) => {
@@ -1025,14 +1345,28 @@ export default function App() {
             });
         });
 
+        // Fetch admin config
+        const configRef = doc(db, `artifacts/${appId}/public/data/config`, 'admin');
+        const unsubConfig = onSnapshot(configRef, (docSnap) => {
+            if (docSnap.exists()) {
+                setAdminConfig(docSnap.data());
+            } else {
+                // Jika config belum ada, buat dengan password default
+                setDoc(configRef, { password: "bos123" });
+            }
+        });
+
+        unsubscribes.push(unsubConfig);
+
         setLoading(false);
         return () => unsubscribes.forEach(unsub => unsub());
     }, [db, isAuthReady, appId]);
 
-    const handleDelete = async (id) => {
+    const handleDelete = async ({id, type}) => {
         if (!db) return;
+        const collectionName = type === 'dropping' ? 'penitipan' : 'pengembalian';
         try {
-            await deleteDoc(doc(db, `artifacts/${appId}/public/data/penitipan`, id));
+            await deleteDoc(doc(db, `artifacts/${appId}/public/data/${collectionName}`, id));
             setDeleteRequest(null);
         } catch (e) {
             console.error("Error deleting document: ", e);
@@ -1041,22 +1375,29 @@ export default function App() {
     };
 
     const allProducts = useMemo(() => {
-        const productNames = dbProducts.map(p => p.name);
-        return [...new Set([...INITIAL_PRODUCTS, ...productNames])].sort();
+        const productMap = new Map();
+        INITIAL_PRODUCTS.forEach(p => productMap.set(p.name, p));
+        dbProducts.forEach(p => productMap.set(p.name, {...p, id: p.id}));
+        return Array.from(productMap.values()).sort((a, b) => a.name.localeCompare(b.name));
     }, [dbProducts]);
 
     const allPartners = useMemo(() => {
-        const partnerNames = dbPartners.map(p => p.name);
-        return [...new Set([...INITIAL_PARTNERS, ...partnerNames])].sort();
+        const partnerMap = new Map();
+        INITIAL_PARTNERS.forEach(p => partnerMap.set(p, {name: p}));
+        dbPartners.forEach(p => partnerMap.set(p.name, {...p, id: p.id}));
+        return Array.from(partnerMap.values()).sort((a, b) => a.name.localeCompare(b.name));
     }, [dbPartners]);
     
     const allEmployees = useMemo(() => {
-        const employeeNames = dbEmployees.map(e => e.name);
-        return [...new Set([...INITIAL_EMPLOYEES, ...employeeNames])].sort();
+        const employeeMap = new Map();
+        INITIAL_EMPLOYEES.forEach(e => employeeMap.set(e, {name: e}));
+        dbEmployees.forEach(e => employeeMap.set(e.name, {...e, id: e.id}));
+        return Array.from(employeeMap.values()).sort((a, b) => a.name.localeCompare(b.name));
     }, [dbEmployees]);
     
-    const filteredConsignments = useMemo(() => {
-        return consignmentList.filter(item => {
+    const filteredData = useMemo(() => {
+        const sourceData = dataType === 'dropping' ? consignmentList : returnList;
+        return sourceData.filter(item => {
             if (!item.tanggal || !item.tanggal.toDate) return false;
             const itemDate = item.tanggal.toDate();
             
@@ -1073,7 +1414,13 @@ export default function App() {
             
             return isDateMatch && isProductMatch && isPartnerMatch && isOfficerMatch;
         });
-    }, [consignmentList, filters]);
+    }, [consignmentList, returnList, filters, dataType]);
+
+    const handleExport = () => {
+        const filename = dataType === 'dropping' ? 'laporan_dropping' : 'laporan_return';
+        const date = new Date().toISOString().slice(0, 10);
+        exportToCSV(filteredData, `${filename}_${date}`);
+    };
 
     const renderView = () => {
         switch (currentView) {
@@ -1090,15 +1437,24 @@ export default function App() {
                             allProducts={allProducts}
                             allPartners={allPartners}
                             allEmployees={allEmployees}
-                            dataToExport={filteredConsignments}
+                            dataToExport={filteredData}
+                            onExport={handleExport}
+                            dataType={dataType}
+                            setDataType={setDataType}
                         />
-                        <HistoryTable data={filteredConsignments} loading={loading} isManagerMode={isManagerMode} onDeleteRequest={setDeleteRequest} />
+                        <HistoryTable 
+                            data={filteredData.map(d => ({...d, type: dataType}))} 
+                            loading={loading} 
+                            isManagerMode={isManagerMode} 
+                            onDeleteRequest={setDeleteRequest}
+                            title={dataType === 'dropping' ? 'Riwayat Penitipan (Dropping)' : 'Riwayat Pengembalian (Return)'}
+                        />
                     </div>
                 );
             case 'canvasing':
                  return <CanvasingApp db={db} appId={appId} disabled={!isAuthReady} />;
             case 'dashboard':
-                return <AdminDashboardView db={db} appId={appId} disabled={!isAuthReady} onUnlock={setIsManagerMode} isManagerMode={isManagerMode} data={filteredConsignments} loading={loading} onDeleteRequest={setDeleteRequest} />;
+                return <AdminDashboardView db={db} appId={appId} disabled={!isAuthReady} onUnlock={setIsManagerMode} isManagerMode={isManagerMode} allProducts={allProducts} adminConfig={adminConfig} auth={auth} attendanceData={attendanceData}/>;
             case 'main':
             default:
                 return <MainMenu setView={setCurrentView} consignmentList={consignmentList} returnList={returnList} allProducts={allProducts} />;
@@ -1124,8 +1480,8 @@ export default function App() {
                     <ConfirmationModal
                         isOpen={!!deleteRequest}
                         onClose={() => setDeleteRequest(null)}
-                        onConfirm={() => handleDelete(deleteRequest.id)}
-                        message={`Apakah Anda yakin ingin menghapus transaksi untuk produk "${deleteRequest.product}" ke mitra "${deleteRequest.partner}"?`}
+                        onConfirm={() => handleDelete(deleteRequest)}
+                        message={`Apakah Anda yakin ingin menghapus transaksi ${deleteRequest.type} untuk produk "${deleteRequest.product}" ke mitra "${deleteRequest.partner}"?`}
                     />
                 )}
             </div>
