@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/TrackingBMKopi/static/css/main.2d00dd0e.css",
-    "main.js": "/TrackingBMKopi/static/js/main.6be2e19e.js",
+    "main.css": "/TrackingBMKopi/static/css/main.6dcc9896.css",
+    "main.js": "/TrackingBMKopi/static/js/main.a5fd558f.js",
     "static/js/453.2d4f1b54.chunk.js": "/TrackingBMKopi/static/js/453.2d4f1b54.chunk.js",
     "index.html": "/TrackingBMKopi/index.html",
-    "main.2d00dd0e.css.map": "/TrackingBMKopi/static/css/main.2d00dd0e.css.map",
-    "main.6be2e19e.js.map": "/TrackingBMKopi/static/js/main.6be2e19e.js.map",
+    "main.6dcc9896.css.map": "/TrackingBMKopi/static/css/main.6dcc9896.css.map",
+    "main.a5fd558f.js.map": "/TrackingBMKopi/static/js/main.a5fd558f.js.map",
     "453.2d4f1b54.chunk.js.map": "/TrackingBMKopi/static/js/453.2d4f1b54.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.2d00dd0e.css",
-    "static/js/main.6be2e19e.js"
+    "static/css/main.6dcc9896.css",
+    "static/js/main.a5fd558f.js"
   ]
 }
