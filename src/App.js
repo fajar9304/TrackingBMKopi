@@ -24,23 +24,13 @@ const INITIAL_PARTNERS = [
 ];
 const INITIAL_EMPLOYEES = ["Gigih", "Fajar", "Pandu", "Ade"];
 
-// --- Fungsi Utilitas untuk Ekstrak CSV ---
-const exportToCSV = (data, filename) => {
+// --- Fungsi Utilitas ---
+const exportToCSV = (data, filename, headers) => {
     if (data.length === 0) {
         console.log("Tidak ada data untuk diekstrak.");
         return;
     }
-    const headers = ['Tanggal', 'Produk', 'Mitra', 'Jumlah', 'Petugas'];
-    const rows = data.map(item => {
-        const dateString = item.tanggal && item.tanggal.toDate ? `"${item.tanggal.toDate().toLocaleString('id-ID')}"` : '""';
-        return [
-            dateString,
-            `"${item.namaProduk}"`,
-            `"${item.namaMitra}"`,
-            item.jumlah,
-            `"${item.namaPetugas || ''}"`
-        ].join(',');
-    });
+    const rows = data.map(item => headers.map(header => `"${item[header.toLowerCase().replace(/ /g, '_')] || ''}"`).join(','));
     const csvContent = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
@@ -53,102 +43,186 @@ const exportToCSV = (data, filename) => {
     document.body.removeChild(link);
 };
 
-const exportCanvasingToCSV = (data, filename) => {
-    if (data.length === 0) {
-        console.log("Tidak ada data canvasing untuk diekstrak.");
-        return;
-    }
-    const headers = ['Tanggal Absen', 'Karyawan', 'Waktu Kunjungan', 'Lokasi Kunjungan', 'Catatan'];
-    const rows = [];
-
-    data.forEach(attendance => {
-        const attendanceDate = attendance.clockInTime?.toDate().toLocaleDateString('id-ID') || 'N/A';
-        const employeeName = attendance.employeeName;
-        
-        const visits = attendance.journey?.filter(j => j.type === 'visit') || [];
-        
-        if (visits.length === 0) {
-            rows.push([`"${attendanceDate}"`, `"${employeeName}"`, '"-"', '"-"', '"Tidak ada kunjungan"']);
-        } else {
-            visits.forEach(visit => {
-                const visitTimestamp = visit.timestamp?.toDate ? visit.timestamp.toDate().toLocaleString('id-ID') : 'N/A';
-                rows.push([
-                    `"${attendanceDate}"`,
-                    `"${employeeName}"`,
-                    `"${visitTimestamp}"`,
-                    `"${visit.location || ''}"`,
-                    `"${(visit.notes || '').replace(/"/g, '""')}"`
-                ]);
-            });
-        }
-    });
-
-    const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
-    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `${filename}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-};
-
-
 // --- Komponen-komponen Aplikasi ---
 
-const MainMenu = ({ setView, consignmentList, returnList, allProducts }) => (
-    <div className="space-y-8">
-        <SummaryCard 
-            consignmentList={consignmentList} 
-            returnList={returnList} 
-            allProducts={allProducts} 
-        />
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <MenuCard 
-                title="Input Data Dropping" 
-                description="Mencatat penitipan produk baru ke mitra."
-                icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path d="M5.5 13a3.5 3.5 0 01-.369-6.98 4 4 0 117.739 0A3.5 3.5 0 0114.5 13H5.5z" /><path d="M9 13.5a1 1 0 011 1v4.5a1 1 0 11-2 0V14.5a1 1 0 011-1z" /></svg>}
-                onClick={() => setView('dropping')}
+const FollowUpNotification = ({ consignmentList, onFollowUp, followUps }) => {
+    const [showAll, setShowAll] = useState(false);
+
+    const outletsToFollowUp = useMemo(() => {
+        const fiveDaysAgo = new Date();
+        fiveDaysAgo.setHours(0, 0, 0, 0);
+        fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+
+        const recentDrops = {};
+        consignmentList.forEach(drop => {
+            const dropDate = drop.tanggal.toDate();
+            if (!recentDrops[drop.namaMitra] || dropDate > recentDrops[drop.namaMitra]) {
+                recentDrops[drop.namaMitra] = dropDate;
+            }
+        });
+        
+        const followedUpMitras = followUps.reduce((acc, curr) => {
+            acc[curr.mitra] = curr.date.toDate();
+            return acc;
+        }, {});
+
+        return Object.entries(recentDrops)
+            .filter(([mitra, lastDropDate]) => {
+                const needsFollowUp = lastDropDate <= fiveDaysAgo;
+                const hasBeenFollowedUp = followedUpMitras[mitra] && followedUpMitras[mitra] > lastDropDate;
+                return needsFollowUp && !hasBeenFollowedUp;
+            })
+            .map(([mitra, lastDropDate]) => ({ mitra, lastDropDate }))
+            .sort((a, b) => a.lastDropDate - b.lastDropDate);
+    }, [consignmentList, followUps]);
+
+    if (outletsToFollowUp.length === 0) {
+        return (
+             <div className="bg-green-100 border border-green-300 text-green-800 font-semibold p-3 rounded-lg flex items-center justify-center space-x-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
+                <span>Semua outlet sudah di-follow up!</span>
+            </div>
+        );
+    }
+    
+    const displayedOutlets = showAll ? outletsToFollowUp : outletsToFollowUp.slice(0, 5);
+
+    return (
+        <div className="bg-yellow-100 border border-yellow-300 text-yellow-800 p-4 rounded-lg">
+            <h3 className="font-bold mb-2">{outletsToFollowUp.length} Outlet Perlu di Follow Up</h3>
+            <ul className="space-y-2">
+                {displayedOutlets.map(({mitra, lastDropDate}) => (
+                    <li key={mitra} className="flex items-center justify-between text-sm bg-white/50 p-2 rounded">
+                        <div>
+                            <p className="font-semibold text-gray-800">{mitra}</p>
+                            <p className="text-xs text-gray-500">Drop terakhir: {lastDropDate.toLocaleDateString('id-ID')}</p>
+                        </div>
+                        <button onClick={() => onFollowUp(mitra)} className="flex items-center space-x-1 text-xs text-green-700 font-semibold hover:text-green-900">
+                           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
+                           <span>Selesai</span>
+                        </button>
+                    </li>
+                ))}
+            </ul>
+            {outletsToFollowUp.length > 5 && (
+                <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold mt-2 text-blue-600">
+                    {showAll ? 'Tampilkan Lebih Sedikit' : `Lihat ${outletsToFollowUp.length - 5} Lainnya...`}
+                </button>
+            )}
+        </div>
+    );
+};
+
+const MemoBoard = ({ memos, onToggle }) => {
+    const activeMemos = memos.filter(memo => !memo.done);
+    if (activeMemos.length === 0) return null;
+
+    return (
+        <div className="p-4 bg-red-100 border border-red-300 rounded-lg">
+            <h3 className="font-bold text-red-800 mb-2">Memo Penting</h3>
+            <div className="space-y-2">
+                {activeMemos.map(memo => (
+                    <div key={memo.id} className="flex items-start text-sm text-gray-700">
+                        <input type="checkbox" onChange={() => onToggle(memo.id, true)} className="mt-1 mr-2"/>
+                        <p>{memo.text}</p>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+const PieChart = ({ percentage, color, size = 80 }) => {
+    const radius = size / 2 - 5;
+    const circumference = 2 * Math.PI * radius;
+    const strokeDashoffset = circumference - (percentage / 100) * circumference;
+
+    return (
+        <div className="relative" style={{ width: size, height: size }}>
+            <svg className="w-full h-full" viewBox={`0 0 ${size} ${size}`}>
+                <circle
+                    className="text-gray-200"
+                    strokeWidth="5"
+                    stroke="currentColor"
+                    fill="transparent"
+                    r={radius}
+                    cx={size / 2}
+                    cy={size / 2}
+                />
+                <circle
+                    className={color}
+                    strokeWidth="5"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={strokeDashoffset}
+                    strokeLinecap="round"
+                    stroke="currentColor"
+                    fill="transparent"
+                    r={radius}
+                    cx={size / 2}
+                    cy={size / 2}
+                    style={{ transform: 'rotate(-90deg)', transformOrigin: '50% 50%' }}
+                />
+            </svg>
+            <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-gray-700">
+                {Math.round(percentage)}%
+            </span>
+        </div>
+    );
+};
+
+const TargetProgress = ({ targets, totalValue, canvasingCount }) => {
+    const valueProgress = targets.valueTarget > 0 ? (totalValue / targets.valueTarget) * 100 : 0;
+    const canvasingProgress = targets.canvasingTarget > 0 ? (canvasingCount / targets.canvasingTarget) * 100 : 0;
+    const formatCurrency = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(value);
+
+    return (
+        <div className="bg-white p-4 rounded-lg shadow-md space-y-4">
+            <h3 className="text-center font-bold text-gray-700">Target Bulanan ({targets.month})</h3>
+            <div className="flex justify-around items-center">
+                <div className="flex flex-col items-center">
+                    <PieChart percentage={valueProgress} color="text-green-500" />
+                    <p className="text-xs font-medium mt-2">Nilai Barang</p>
+                    <p className="text-xs text-gray-500">{formatCurrency(totalValue)}</p>
+                </div>
+                <div className="flex flex-col items-center">
+                    <PieChart percentage={canvasingProgress} color="text-purple-500" />
+                    <p className="text-xs font-medium mt-2">Canvasing</p>
+                     <p className="text-xs text-gray-500">{canvasingCount} Mitra</p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const MainMenu = ({ setView, consignmentList, returnList, allProducts, memos, onToggleMemo, targets, totalValue, canvasingCount, onFollowUp, followUps }) => (
+    <div className="flex flex-col min-h-[calc(100vh-120px)]">
+        <div className="flex-grow space-y-4">
+            <MemoBoard memos={memos} onToggle={onToggleMemo} />
+            <TargetProgress targets={targets} totalValue={totalValue} canvasingCount={canvasingCount} />
+            <FollowUpNotification consignmentList={consignmentList} onFollowUp={onFollowUp} followUps={followUps} />
+            <SummaryCard 
+                consignmentList={consignmentList} 
+                returnList={returnList} 
+                allProducts={allProducts} 
             />
-             <MenuCard 
-                title="Input Data Return" 
-                description="Mencatat produk yang dikembalikan dari mitra."
-                icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M15.707 15.707a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414l5-5a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 010 1.414zm-6 0a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414l5-5a1 1 0 011.414 1.414L5.414 10l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></svg>}
-                onClick={() => setView('return')}
-            />
-            <MenuCard 
-                title="Canvasing Mitra" 
-                description="Absensi harian dan laporan kunjungan untuk tim."
-                icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 11a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1v-1z" /></svg>}
-                onClick={() => setView('canvasing')}
-            />
-            <MenuCard 
-                title="Ekstrak Data" 
-                description="Lihat riwayat, filter, dan unduh laporan CSV."
-                icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3zm3.146 2.146a.5.5 0 01.708 0L10 8.293l3.146-3.147a.5.5 0 01.708.708L10.707 9l3.147 3.146a.5.5 0 01-.708.708L10 9.707l-3.146 3.147a.5.5 0 01-.708-.708L9.293 9 6.146 5.854a.5.5 0 010-.708z" clipRule="evenodd" /></svg>}
-                onClick={() => setView('ekstrak')}
-            />
-            <MenuCard 
-                title="Akses Dashboard Admin" 
-                description="Kelola data master dan hapus transaksi."
-                icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" /></svg>}
-                onClick={() => setView('dashboard')}
-            />
+        </div>
+        <div className="mt-8 grid grid-cols-2 md:grid-cols-5 gap-3">
+             <BottomMenuCard title="Dropping" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" viewBox="0 0 20 20" fill="currentColor"><path d="M5.5 13a3.5 3.5 0 01-.369-6.98 4 4 0 117.739 0A3.5 3.5 0 0114.5 13H5.5z" /><path d="M9 13.5a1 1 0 011 1v4.5a1 1 0 11-2 0V14.5a1 1 0 011-1z" /></svg>} onClick={() => setView('dropping')} />
+             <BottomMenuCard title="Return" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M15.707 15.707a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414l5-5a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 010 1.414zm-6 0a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414l5-5a1 1 0 011.414 1.414L5.414 10l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></svg>} onClick={() => setView('return')} />
+             <BottomMenuCard title="Canvasing" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" viewBox="0 0 20 20" fill="currentColor"><path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 11a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1v-1z" /></svg>} onClick={() => setView('canvasing')} />
+             <BottomMenuCard title="Ekstrak" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3zm3.146 2.146a.5.5 0 01.708 0L10 8.293l3.146-3.147a.5.5 0 01.708.708L10.707 9l3.147 3.146a.5.5 0 01-.708.708L10 9.707l-3.146 3.147a.5.5 0 01-.708-.708L9.293 9 6.146 5.854a.5.5 0 010-.708z" clipRule="evenodd" /></svg>} onClick={() => setView('ekstrak')} />
+             <BottomMenuCard title="Admin" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" /></svg>} onClick={() => setView('dashboard')} />
         </div>
     </div>
 );
 
-const MenuCard = ({ title, description, icon, onClick }) => (
-    <div onClick={onClick} className="bg-white p-6 rounded-xl shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col items-start text-left">
-        <div className="bg-blue-100 text-blue-600 p-3 rounded-lg mb-4">
-            {icon}
-        </div>
-        <h3 className="text-lg font-bold text-gray-800 mb-1">{title}</h3>
-        <p className="text-sm text-gray-500 flex-grow">{description}</p>
-    </div>
+const BottomMenuCard = ({ title, icon, onClick }) => (
+    <button onClick={onClick} className="bg-white p-3 rounded-xl shadow-md hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col items-center justify-center text-center text-blue-600 font-semibold">
+        {icon}
+        <span className="text-xs">{title}</span>
+    </button>
 );
+
 
 const Header = () => (
     <header className="bg-white shadow-md rounded-lg p-4 flex items-center">
@@ -167,6 +241,7 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
     const [partner, setPartner] = useState("");
     const [officerName, setOfficerName] = useState("");
     const [items, setItems] = useState([{ product: "", quantity: "" }]);
+    const [moneyReceived, setMoneyReceived] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [formMessage, setFormMessage] = useState({ type: '', text: '' });
 
@@ -197,6 +272,10 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
             setFormMessage({ type: 'error', text: 'Harap pilih mitra terlebih dahulu.' });
             return;
         }
+        if (!moneyReceived) {
+            setFormMessage({ type: 'error', text: 'Harap isi jumlah uang yang diterima.' });
+            return;
+        }
 
         const validItems = items.filter(item => item.product && item.quantity > 0);
         if (validItems.length === 0) {
@@ -217,6 +296,7 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
                     jumlah: Number(item.quantity),
                     tanggal: Timestamp.now(),
                     namaPetugas: officerName,
+                    uangDiterima: Number(moneyReceived) || 0
                 });
             });
 
@@ -225,6 +305,7 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
             setPartner("");
             setOfficerName("");
             setItems([{ product: "", quantity: "" }]);
+            setMoneyReceived("");
             setFormMessage({ type: 'success', text: `${validItems.length} data produk berhasil disimpan!` });
             setTimeout(() => setFormMessage({ type: '', text: '' }), 3000);
 
@@ -262,6 +343,17 @@ const ConsignmentForm = ({ db, appId, disabled, products, partners, employees })
                 <button type="button" onClick={addItemRow} className="w-full bg-gray-200 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400">
                     + Tambah Produk Lain
                 </button>
+                 <div>
+                    <label htmlFor="moneyReceived" className="block text-sm font-medium text-gray-600">Jumlah Uang Diterima (Wajib)</label>
+                    <input 
+                        type="number" 
+                        id="moneyReceived" 
+                        value={moneyReceived} 
+                        onChange={(e) => setMoneyReceived(e.target.value)} 
+                        placeholder="Contoh: 50000"
+                        className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500" 
+                    />
+                </div>
                 <button type="submit" disabled={isSubmitting || disabled} className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400">
                     {isSubmitting ? 'Menyimpan...' : 'Simpan Semua Data'}
                 </button>
@@ -427,11 +519,12 @@ const FilterAndExportPanel = ({ filters, setFilters, allProducts, allPartners, a
     );
 };
 
-const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, allProducts, adminConfig, auth, attendanceData }) => {
+const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, allProducts, adminConfig, auth, attendanceData, memos, onToggleMemo, onAddMemo, onDeleteMemo, targets, onSetTargets }) => {
     const [isLocked, setIsLocked] = useState(!isManagerMode);
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [message, setMessage] = useState({type: '', text: ''});
+    const [activeTab, setActiveTab] = useState('umum');
     
     const handleUnlock = () => {
         if (password === adminConfig.password) {
@@ -498,91 +591,112 @@ const AdminDashboardView = ({ db, appId, disabled, onUnlock, isManagerMode, allP
         );
     }
 
+    const tabs = [
+        { id: 'umum', label: 'Umum' },
+        { id: 'target', label: 'Input Target' },
+        { id: 'memo', label: 'Memo' },
+        { id: 'password', label: 'Password' },
+        { id: 'canvasing', label: 'Laporan Canvasing' },
+        { id: 'rekapUang', label: 'Rekap Uang' }
+    ];
+
     return (
-        <div className="space-y-8">
-            <div className="bg-white p-6 rounded-lg shadow-md">
-                 <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-bold text-gray-700">Panel Pengelolaan</h2>
-                    <button onClick={handleLock} className="text-sm bg-gray-200 text-gray-700 py-1 px-3 rounded-md hover:bg-gray-300">
-                        Kunci Dashboard
-                    </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <AddItemForm db={db} appId={appId} disabled={disabled} collectionName="products" itemName="Produk" placeholder="Nama produk baru..." />
-                    <AddItemForm db={db} appId={appId} disabled={disabled} collectionName="partners" itemName="Mitra" placeholder="Nama mitra baru..." />
-                    <AddItemForm db={db} appId={appId} disabled={disabled} collectionName="employees" itemName="Karyawan" placeholder="Nama karyawan baru..." />
-                </div>
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-700">Dashboard Admin</h2>
+                <button onClick={handleLock} className="text-sm bg-gray-200 text-gray-700 py-1 px-3 rounded-md hover:bg-gray-300">
+                    Kunci Dashboard
+                </button>
             </div>
             
-            <ManageProducts db={db} appId={appId} allProducts={allProducts} />
-            <ManagePassword db={db} appId={appId} adminConfig={adminConfig} />
-            <CanvasingAdminDashboard db={db} appId={appId} attendanceData={attendanceData} />
+            <div className="border-b border-gray-200">
+                <nav className="-mb-px flex space-x-6 overflow-x-auto" aria-label="Tabs">
+                    {tabs.map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`${
+                                activeTab === tab.id
+                                    ? 'border-blue-500 text-blue-600'
+                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+
+            <div className="mt-6">
+                {activeTab === 'umum' && <ManageGeneral db={db} appId={appId} disabled={disabled} allProducts={allProducts} />}
+                {activeTab === 'target' && <ManageTargets db={db} appId={appId} currentTargets={targets} onSetTargets={onSetTargets} />}
+                {activeTab === 'memo' && <ManageMemos memos={memos} onAddMemo={onAddMemo} onToggleMemo={onToggleMemo} onDeleteMemo={onDeleteMemo} />}
+                {activeTab === 'password' && <ManagePassword db={db} appId={appId} adminConfig={adminConfig} />}
+                {activeTab === 'canvasing' && <CanvasingAdminDashboard db={db} appId={appId} attendanceData={attendanceData} />}
+                {activeTab === 'rekapUang' && <MoneyRekap db={db} appId={appId} />}
+            </div>
         </div>
     );
 };
 
+const ManageGeneral = ({ db, appId, disabled, allProducts }) => {
+    return (
+         <div className="space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <AddItemForm db={db} appId={appId} disabled={disabled} collectionName="partners" itemName="Mitra" placeholder="Nama mitra baru..." />
+                <AddItemForm db={db} appId={appId} disabled={disabled} collectionName="employees" itemName="Karyawan" placeholder="Nama karyawan baru..." />
+            </div>
+            <hr/>
+            <ManageProducts db={db} appId={appId} allProducts={allProducts} />
+        </div>
+    )
+};
+
 const ManageProducts = ({ db, appId, allProducts }) => {
-    const [productPrices, setProductPrices] = useState({});
-    const [isSubmitting, setIsSubmitting] = useState(false);
-    const [message, setMessage] = useState({type: '', text: ''});
+    const [products, setProducts] = useState([]);
+    const [editingProduct, setEditingProduct] = useState(null); // {id, name, price}
 
     useEffect(() => {
-        const prices = {};
-        allProducts.forEach(p => {
-            prices[p.id] = p.price || 0;
-        });
-        setProductPrices(prices);
+        setProducts(allProducts.filter(p => p.id));
     }, [allProducts]);
 
-    const handlePriceChange = (productId, newPrice) => {
-        setProductPrices(prev => ({...prev, [productId]: newPrice}));
-    };
-
-    const handleSubmit = async () => {
-        setIsSubmitting(true);
-        setMessage({type: '', text: ''});
-        try {
-            const batch = writeBatch(db);
-            Object.entries(productPrices).forEach(([productId, price]) => {
-                if (productId) { // Pastikan ID produk ada
-                    const docRef = doc(db, `artifacts/${appId}/public/data/products`, productId);
-                    batch.update(docRef, { price: Number(price) });
-                }
-            });
-            await batch.commit();
-            setMessage({type: 'success', text: 'Harga produk berhasil diperbarui!'});
-        } catch (error) {
-            console.error("Error updating prices: ", error);
-            setMessage({type: 'error', text: 'Gagal memperbarui harga.'});
-        } finally {
-            setIsSubmitting(false);
-            setTimeout(() => setMessage({type: '', text: ''}), 3000);
-        }
+    const handleUpdate = async (e) => {
+        e.preventDefault();
+        if (!editingProduct || !editingProduct.name || !editingProduct.price) return;
+        const docRef = doc(db, `artifacts/${appId}/public/data/products`, editingProduct.id);
+        await updateDoc(docRef, {
+            name: editingProduct.name,
+            price: Number(editingProduct.price)
+        });
+        setEditingProduct(null);
     };
 
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-bold text-gray-700 mb-4">Pengelolaan Harga Produk</h2>
-            <div className="space-y-3">
-                {allProducts.filter(p => p.id).map(product => ( // Hanya tampilkan produk dari DB
+        <div className="space-y-3">
+            <h3 className="text-lg font-semibold text-gray-600 mb-2">Kelola Produk</h3>
+             <AddItemForm db={db} appId={appId} collectionName="products" itemName="Produk" placeholder="Nama produk baru..." />
+             <div className="mt-4 space-y-2">
+                {products.map(product => (
                     <div key={product.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
-                        <span className="font-medium text-gray-800">{product.name}</span>
-                        <div className="flex items-center space-x-2">
-                            <span className="text-gray-500">Rp</span>
-                            <input 
-                                type="number" 
-                                value={productPrices[product.id] || ''}
-                                onChange={(e) => handlePriceChange(product.id, e.target.value)}
-                                className="w-32 p-1 border border-gray-300 rounded-md shadow-sm"
-                            />
-                        </div>
+                        {editingProduct?.id === product.id ? (
+                            <form onSubmit={handleUpdate} className="flex-grow flex items-center space-x-2">
+                                <input type="text" value={editingProduct.name} onChange={(e) => setEditingProduct({...editingProduct, name: e.target.value})} className="p-1 border rounded w-1/2"/>
+                                <input type="number" value={editingProduct.price} onChange={(e) => setEditingProduct({...editingProduct, price: e.target.value})} className="p-1 border rounded w-1/4"/>
+                                <button type="submit" className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded">Simpan</button>
+                                <button type="button" onClick={() => setEditingProduct(null)} className="text-xs bg-gray-200 px-2 py-1 rounded">Batal</button>
+                            </form>
+                        ) : (
+                            <>
+                                <div>
+                                    <span className="font-medium text-gray-800">{product.name}</span>
+                                    <span className="text-sm text-gray-500 ml-2">(Rp {product.price})</span>
+                                </div>
+                                <button onClick={() => setEditingProduct(product)} className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Edit</button>
+                            </>
+                        )}
                     </div>
                 ))}
             </div>
-            <button onClick={handleSubmit} disabled={isSubmitting} className="mt-4 w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                {isSubmitting ? 'Menyimpan...' : 'Simpan Semua Perubahan Harga'}
-            </button>
-            {message.text && <FormMessage type={message.type} text={message.text} />}
         </div>
     );
 };
@@ -620,28 +734,25 @@ const ManagePassword = ({ db, appId, adminConfig }) => {
     };
 
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-bold text-gray-700 mb-4">Pengelolaan Password Admin</h2>
-            <div className="space-y-4">
-                <input 
-                    type="password" 
-                    value={oldPassword}
-                    onChange={(e) => setOldPassword(e.target.value)}
-                    placeholder="Password Lama"
-                    className="w-full p-2 border border-gray-300 rounded-md"
-                />
-                <input 
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Password Baru"
-                    className="w-full p-2 border border-gray-300 rounded-md"
-                />
-                <button onClick={handleChangePassword} disabled={isSubmitting} className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
-                    {isSubmitting ? 'Mengubah...' : 'Ubah Password'}
-                </button>
-            </div>
-             {message.text && <FormMessage type={message.type} text={message.text} />}
+        <div className="space-y-4">
+            <input 
+                type="password" 
+                value={oldPassword}
+                onChange={(e) => setOldPassword(e.target.value)}
+                placeholder="Password Lama"
+                className="w-full p-2 border border-gray-300 rounded-md"
+            />
+            <input 
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Password Baru"
+                className="w-full p-2 border border-gray-300 rounded-md"
+            />
+            <button onClick={handleChangePassword} disabled={isSubmitting} className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
+                {isSubmitting ? 'Mengubah...' : 'Ubah Password'}
+            </button>
+            {message.text && <FormMessage type={message.type} text={message.text} />}
         </div>
     );
 };
@@ -649,22 +760,30 @@ const ManagePassword = ({ db, appId, adminConfig }) => {
 
 const AddItemForm = ({ db, appId, disabled, collectionName, itemName, placeholder }) => {
     const [name, setName] = useState('');
+    const [price, setPrice] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (!name.trim()) {
             setMessage({ type: 'error', text: 'Nama tidak boleh kosong.' });
             return;
         }
+        if (collectionName === 'products' && !price) {
+             setMessage({ type: 'error', text: 'Harga tidak boleh kosong.' });
+            return;
+        }
+
         setIsSubmitting(true);
         try {
             const data = { name: name.trim() };
             if (collectionName === 'products') {
-                data.price = 8000; // Harga default untuk produk baru
+                data.price = Number(price);
             }
             await addDoc(collection(db, `artifacts/${appId}/public/data/${collectionName}`), data);
             setName('');
+            setPrice('');
             setMessage({ type: 'success', text: `${itemName} berhasil ditambahkan!` });
             setTimeout(() => setMessage({ type: '', text: '' }), 3000);
         } catch (error) {
@@ -677,9 +796,12 @@ const AddItemForm = ({ db, appId, disabled, collectionName, itemName, placeholde
     return (
         <div>
             <h3 className="text-lg font-semibold text-gray-600 mb-2">Tambah {itemName} Baru</h3>
-            <form onSubmit={handleSubmit} className="flex items-center space-x-2">
-                <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} className="flex-grow p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500" disabled={disabled} />
-                <button type="submit" disabled={isSubmitting || disabled} className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
+            <form onSubmit={handleSubmit} className="space-y-2">
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} className="w-full p-2 border border-gray-300 rounded-md shadow-sm" disabled={disabled} />
+                {collectionName === 'products' && (
+                    <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Harga produk..." className="w-full p-2 border border-gray-300 rounded-md shadow-sm" disabled={disabled} />
+                )}
+                <button type="submit" disabled={isSubmitting || disabled} className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-400">
                     {isSubmitting ? '...' : 'Tambah'}
                 </button>
             </form>
@@ -1179,9 +1301,8 @@ const CanvasingAdminDashboard = ({ db, appId, attendanceData }) => {
     };
 
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
-            <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold text-gray-700">Laporan Canvasing Mitra</h2>
+        <div>
+            <div className="flex justify-end mb-4">
                 <button 
                     onClick={handleExport}
                     className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 text-sm"
@@ -1247,6 +1368,179 @@ const CanvasingAdminDashboard = ({ db, appId, attendanceData }) => {
     );
 };
 
+const MoneyRekap = ({ db, appId }) => {
+    const [moneyData, setMoneyData] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!db) return;
+        const q = query(collection(db, `artifacts/${appId}/public/data/penitipan`));
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            const data = querySnapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter(item => item.uangDiterima && item.uangDiterima > 0)
+                .map(item => ({
+                    tanggal: item.tanggal?.toDate().toLocaleDateString('id-ID') || 'N/A',
+                    mitra: item.namaMitra,
+                    petugas: item.namaPetugas,
+                    jumlah_uang: item.uangDiterima,
+                }));
+            setMoneyData(data);
+            setLoading(false);
+        });
+        return () => unsubscribe();
+    }, [db, appId]);
+
+    const handleExport = () => {
+        const date = new Date().toISOString().slice(0, 10);
+        const headers = ['Tanggal', 'Mitra', 'Petugas', 'Jumlah Uang'];
+        const dataForExport = moneyData.map(d => ({
+            tanggal: d.tanggal,
+            mitra: d.mitra,
+            petugas: d.petugas,
+            'jumlah_uang': d.jumlah_uang
+        }));
+        exportToCSV(dataForExport, `laporan_penarikan_uang_${date}`, headers);
+    };
+
+    const formatCurrency = (value) => {
+        return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(value);
+    };
+
+    return (
+        <div>
+            <div className="flex justify-end mb-4">
+                <button 
+                    onClick={handleExport}
+                    className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 text-sm"
+                >
+                    Ekstrak Rekap Uang (CSV)
+                </button>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tanggal</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mitra</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Petugas</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Jumlah Uang</th>
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                        {loading ? (
+                            <tr><td colSpan="4" className="text-center py-4">Memuat data...</td></tr>
+                        ) : moneyData.length === 0 ? (
+                             <tr><td colSpan="4" className="text-center py-4 text-gray-500">Tidak ada data penarikan uang.</td></tr>
+                        ) : (
+                            moneyData.map((item, index) => (
+                                <tr key={index}>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.tanggal}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.mitra}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.petugas}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">{formatCurrency(item.jumlah_uang)}</td>
+                                </tr>
+                            ))
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+const ManageTargets = ({ db, appId, currentTargets, onSetTargets }) => {
+    const [valueTarget, setValueTarget] = useState(currentTargets.valueTarget || '');
+    const [canvasingTarget, setCanvasingTarget] = useState(currentTargets.canvasingTarget || '');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [message, setMessage] = useState({type: '', text: ''});
+
+    const handleSubmit = async () => {
+        setIsSubmitting(true);
+        const newTargets = {
+            ...currentTargets,
+            valueTarget: Number(valueTarget),
+            canvasingTarget: Number(canvasingTarget)
+        };
+        await onSetTargets(newTargets);
+        setMessage({type: 'success', text: 'Target berhasil disimpan!'});
+        setIsSubmitting(false);
+        setTimeout(() => setMessage({type: '', text: ''}), 3000);
+    };
+    
+    return (
+        <div className="space-y-4">
+            <div>
+                <label className="block text-sm font-medium text-gray-600">Target Akumulasi Nilai Barang (Rp)</label>
+                <input 
+                    type="number" 
+                    value={valueTarget}
+                    onChange={(e) => setValueTarget(e.target.value)}
+                    placeholder="Contoh: 10000000"
+                    className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                />
+            </div>
+             <div>
+                <label className="block text-sm font-medium text-gray-600">Target Jumlah Canvasing Mitra</label>
+                <input 
+                    type="number" 
+                    value={canvasingTarget}
+                    onChange={(e) => setCanvasingTarget(e.target.value)}
+                    placeholder="Contoh: 50"
+                    className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                />
+            </div>
+            <button onClick={handleSubmit} disabled={isSubmitting} className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                {isSubmitting ? 'Menyimpan...' : 'Simpan Target'}
+            </button>
+            {message.text && <FormMessage type={message.type} text={message.text} />}
+        </div>
+    );
+};
+
+const ManageMemos = ({ memos, onAddMemo, onToggleMemo, onDeleteMemo }) => {
+    const [newMemo, setNewMemo] = useState('');
+
+    const handleAdd = () => {
+        if (newMemo.trim()) {
+            onAddMemo(newMemo.trim());
+            setNewMemo('');
+        }
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="flex space-x-2">
+                <input 
+                    type="text"
+                    value={newMemo}
+                    onChange={(e) => setNewMemo(e.target.value)}
+                    placeholder="Tulis memo baru..."
+                    className="flex-grow p-2 border border-gray-300 rounded-md"
+                />
+                <button onClick={handleAdd} className="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700">Tambah</button>
+            </div>
+            <hr/>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {memos.map(memo => (
+                    <div key={memo.id} className={`p-4 rounded-lg shadow ${memo.done ? 'bg-gray-100 text-gray-500' : 'bg-yellow-100'}`}>
+                        <p className={`text-sm ${memo.done ? 'line-through' : ''}`}>{memo.text}</p>
+                        <div className="flex justify-between items-center mt-3">
+                            <label className="flex items-center text-xs">
+                                <input type="checkbox" checked={memo.done} onChange={() => onToggleMemo(memo.id, !memo.done)} className="mr-2"/>
+                                Selesai
+                            </label>
+                            <button onClick={() => onDeleteMemo(memo.id)} className="text-red-500 hover:text-red-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 
 // --- Komponen Utama Aplikasi ---
 export default function App() {
@@ -1261,6 +1555,9 @@ export default function App() {
     const [dbEmployees, setDbEmployees] = useState([]);
     const [attendanceData, setAttendanceData] = useState([]);
     const [adminConfig, setAdminConfig] = useState({ password: "bos123" });
+    const [memos, setMemos] = useState([]);
+    const [targets, setTargets] = useState({ month: '', valueTarget: 0, canvasingTarget: 0 });
+    const [followUps, setFollowUps] = useState([]);
     
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -1279,11 +1576,6 @@ export default function App() {
 
     // Efek untuk inisialisasi Firebase dan otentikasi
     useEffect(() => {
-        if (!firebaseConfig.apiKey) {
-            setError("Konfigurasi Firebase tidak ditemukan.");
-            setLoading(false);
-            return;
-        }
         try {
             const app = initializeApp(firebaseConfig);
             const firestoreDb = getFirestore(app);
@@ -1329,6 +1621,8 @@ export default function App() {
             partners: { path: `artifacts/${appId}/public/data/partners`, setter: setDbPartners },
             employees: { path: `artifacts/${appId}/public/data/employees`, setter: setDbEmployees },
             absensi: { path: `artifacts/${appId}/public/data/absensi`, setter: setAttendanceData },
+            memos: { path: `artifacts/${appId}/public/data/memos`, setter: setMemos },
+            followups: { path: `artifacts/${appId}/public/data/followups`, setter: setFollowUps },
         };
 
         const unsubscribes = Object.entries(collections).map(([key, { path, setter }]) => {
@@ -1345,18 +1639,30 @@ export default function App() {
             });
         });
 
-        // Fetch admin config
+        // Fetch admin config and targets
         const configRef = doc(db, `artifacts/${appId}/public/data/config`, 'admin');
         const unsubConfig = onSnapshot(configRef, (docSnap) => {
             if (docSnap.exists()) {
                 setAdminConfig(docSnap.data());
             } else {
-                // Jika config belum ada, buat dengan password default
                 setDoc(configRef, { password: "bos123" });
             }
         });
-
         unsubscribes.push(unsubConfig);
+
+        const currentMonth = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+        const targetsRef = doc(db, `artifacts/${appId}/public/data/targets`, currentMonth);
+        const unsubTargets = onSnapshot(targetsRef, (docSnap) => {
+            if (docSnap.exists()) {
+                setTargets(docSnap.data());
+            } else {
+                const defaultTargets = { month: currentMonth, valueTarget: 0, canvasingTarget: 0 };
+                setDoc(targetsRef, defaultTargets);
+                setTargets(defaultTargets);
+            }
+        });
+        unsubscribes.push(unsubTargets);
+
 
         setLoading(false);
         return () => unsubscribes.forEach(unsub => unsub());
@@ -1419,7 +1725,75 @@ export default function App() {
     const handleExport = () => {
         const filename = dataType === 'dropping' ? 'laporan_dropping' : 'laporan_return';
         const date = new Date().toISOString().slice(0, 10);
-        exportToCSV(filteredData, `${filename}_${date}`);
+        const headers = ['Tanggal', 'Produk', 'Mitra', 'Jumlah', 'Petugas'];
+        const dataForExport = filteredData.map(d => ({
+            tanggal: d.tanggal?.toDate().toLocaleString('id-ID'),
+            produk: d.namaProduk,
+            mitra: d.namaMitra,
+            jumlah: d.jumlah,
+            petugas: d.namaPetugas
+        }));
+        exportToCSV(dataForExport, `${filename}_${date}`, headers);
+    };
+
+    const handleFollowUp = async (mitraName) => {
+        await addDoc(collection(db, `artifacts/${appId}/public/data/followups`), {
+            mitra: mitraName,
+            date: Timestamp.now()
+        });
+    };
+    
+    const handleToggleMemo = async (id, done) => {
+        const memoRef = doc(db, `artifacts/${appId}/public/data/memos`, id);
+        await updateDoc(memoRef, { done });
+    };
+
+    const handleAddMemo = async (text) => {
+        await addDoc(collection(db, `artifacts/${appId}/public/data/memos`), {
+            text,
+            done: false,
+            createdAt: Timestamp.now()
+        });
+    };
+
+    const handleDeleteMemo = async (id) => {
+        await deleteDoc(doc(db, `artifacts/${appId}/public/data/memos`, id));
+    };
+    
+    const handleSetTargets = async (newTargets) => {
+        const targetsRef = doc(db, `artifacts/${appId}/public/data/targets`, newTargets.month);
+        await setDoc(targetsRef, newTargets);
+    };
+
+    const { totalValue, canvasingCount } = useMemo(() => {
+        const currentMonth = new Date().getMonth();
+        const currentYear = new Date().getFullYear();
+
+        const value = consignmentList
+            .filter(item => {
+                const itemDate = item.tanggal.toDate();
+                return itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear;
+            })
+            .reduce((acc, item) => {
+                const product = allProducts.find(p => p.name === item.namaProduk);
+                return acc + (item.jumlah * (product?.price || 0));
+            }, 0);
+
+        const canvasing = attendanceData
+            .filter(item => {
+                const itemDate = item.clockInTime.toDate();
+                return itemDate.getMonth() === currentMonth && itemDate.getFullYear() === currentYear;
+            })
+            .reduce((acc, item) => acc + (item.journey?.filter(j => j.type === 'visit').length || 0), 0);
+
+        return { totalValue: value, canvasingCount: canvasing };
+    }, [consignmentList, attendanceData, allProducts]);
+    
+    const handleSetView = (view) => {
+        if (currentView === 'dashboard' && view !== 'dashboard') {
+            setIsManagerMode(false);
+        }
+        setCurrentView(view);
     };
 
     const renderView = () => {
@@ -1454,10 +1828,10 @@ export default function App() {
             case 'canvasing':
                  return <CanvasingApp db={db} appId={appId} disabled={!isAuthReady} />;
             case 'dashboard':
-                return <AdminDashboardView db={db} appId={appId} disabled={!isAuthReady} onUnlock={setIsManagerMode} isManagerMode={isManagerMode} allProducts={allProducts} adminConfig={adminConfig} auth={auth} attendanceData={attendanceData}/>;
+                return <AdminDashboardView db={db} appId={appId} disabled={!isAuthReady} onUnlock={setIsManagerMode} isManagerMode={isManagerMode} allProducts={allProducts} adminConfig={adminConfig} auth={auth} attendanceData={attendanceData} memos={memos} onAddMemo={handleAddMemo} onToggleMemo={handleToggleMemo} onDeleteMemo={handleDeleteMemo} targets={targets} onSetTargets={handleSetTargets}/>;
             case 'main':
             default:
-                return <MainMenu setView={setCurrentView} consignmentList={consignmentList} returnList={returnList} allProducts={allProducts} />;
+                return <MainMenu setView={setCurrentView} consignmentList={consignmentList} returnList={returnList} allProducts={allProducts} memos={memos} onToggleMemo={handleToggleMemo} targets={targets} totalValue={totalValue} canvasingCount={canvasingCount} onFollowUp={handleFollowUp} followUps={followUps} />;
         }
     };
 
@@ -1468,7 +1842,7 @@ export default function App() {
                 {error && <ErrorMessage message={error} />}
                 
                 {currentView !== 'main' && (
-                    <button onClick={() => setCurrentView('main')} className="mb-4 bg-gray-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-600 transition-all flex items-center">
+                    <button onClick={() => handleSetView('main')} className="mb-4 bg-gray-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-600 transition-all flex items-center">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
                         Kembali ke Menu Utama
                     </button>

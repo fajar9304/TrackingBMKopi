@@ -1,3 +1,144 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner Semesta Cafe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        #qr-reader {
+            border: 2px dashed #4a5568;
+            border-radius: 0.5rem;
+        }
+        #qr-reader-results {
+            transition: all 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-lg p-6 md:p-8">
+        <div class="text-center mb-6">
+            <img src="https://res.cloudinary.com/dixc7tg2l/image/upload/v1753695417/logo_semesta_baru-removebg-preview_x8admb.png" alt="Logo Semesta Cafe" class="w-40 mx-auto mb-2">
+            <h1 class="text-3xl font-bold text-green-900">Aplikasi Scanner</h1>
+            <p class="text-gray-500">Arahkan kamera ke QR Code pelanggan</p>
+        </div>
+
+        <div id="qr-reader" class="w-full"></div>
+        
+        <div id="qr-reader-results" class="mt-6 text-center p-4 rounded-lg bg-gray-50 min-h-[80px] flex items-center justify-center">
+            Menunggu pemindaian...
+        </div>
+    </div>
+
+    <script type="module">
+        // --- Inisialisasi Firebase ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, doc, getDoc, updateDoc, increment, arrayUnion, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyBxF6VHS7oAqFrnTkdWtyPvc2tJnQI17i8",
+          authDomain: "semesta-app-dcff6.firebaseapp.com",
+          projectId: "semesta-app-dcff6",
+          storageBucket: "semesta-app-dcff6.appspot.com",
+          messagingSenderId: "147343991951",
+          appId: "1:147343991951:web:6acf2213d28821368ebcfa"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const appId = firebaseConfig.projectId;
+        const publicDataPath = `artifacts/${appId}/public/data`;
+
+        // --- Logika Aplikasi Scanner ---
+        const resultContainer = document.getElementById('qr-reader-results');
+        let lastScanTime = 0;
+        let lastScanData = null;
+
+        function showResult(message, type = 'info') {
+            resultContainer.innerHTML = message;
+            resultContainer.classList.remove('bg-green-100', 'text-green-800', 'bg-yellow-100', 'text-yellow-800', 'bg-red-100', 'text-red-800', 'bg-gray-50');
+            
+            if (type === 'success') {
+                resultContainer.classList.add('bg-green-100', 'text-green-800');
+            } else if (type === 'bonus') {
+                resultContainer.classList.add('bg-yellow-100', 'text-yellow-800');
+            } else if (type === 'error') {
+                resultContainer.classList.add('bg-red-100', 'text-red-800');
+            } else {
+                 resultContainer.classList.add('bg-gray-50');
+            }
+        }
+
+        async function onScanSuccess(decodedText, decodedResult) {
+            const now = Date.now();
+            // Mencegah pemindaian ganda dalam 3 detik
+            if (now - lastScanTime < 3000 && decodedText === lastScanData) {
+                return;
+            }
+            lastScanTime = now;
+            lastScanData = decodedText;
+
+            showResult(`Memproses ID: ${decodedText}...`, 'info');
+
+            const userId = decodedText;
+            const userDocRef = doc(db, `${publicDataPath}/users`, userId);
+
+            try {
+                const userDoc = await getDoc(userDocRef);
+
+                if (!userDoc.exists()) {
+                    showResult(`<strong>Error:</strong> Pelanggan dengan ID ini tidak ditemukan.`, 'error');
+                    return;
+                }
+
+                const userData = userDoc.data();
+                const currentScanCount = userData.scanCount || 0;
+                const newScanCount = currentScanCount + 1;
+
+                // Update scan count
+                await updateDoc(userDocRef, {
+                    scanCount: increment(1)
+                });
+                
+                // Cek untuk voucher
+                if (newScanCount > 0 && newScanCount % 5 === 0) {
+                    const newVoucher = { 
+                        id: `voucher_scan_${Date.now()}`, 
+                        type: 'scan', 
+                        discount: 10, 
+                        createdAt: Timestamp.now(), 
+                        used: false 
+                    };
+                    await updateDoc(userDocRef, {
+                        vouchers: arrayUnion(newVoucher)
+                    });
+                    showResult(`<strong>Berhasil!</strong><br>${userData.name} mendapat voucher diskon 10%! (Scan ke-${newScanCount})`, 'bonus');
+                } else {
+                    showResult(`<strong>Scan Berhasil!</strong><br>Pelanggan: ${userData.name} (Scan ke-${newScanCount})`, 'success');
+                }
+
+            } catch (error) {
+                console.error("Error processing scan:", error);
+                showResult(`<strong>Error:</strong> Terjadi masalah saat memproses data. Coba lagi.`, 'error');
+            }
+        }
+
+        function onScanFailure(error) {
+            // Biarkan kosong agar tidak menampilkan log yang mengganggu di konsol
+        }
+
+        let html5QrcodeScanner = new Html5QrcodeScanner(
+            "qr-reader", 
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            /* verbose= */ false
+        );
+        html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+
+    </script>
+</body>
+</html>
