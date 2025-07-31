@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Absensi Karyawan Semesta Cafe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        video, canvas { border-radius: 0.5rem; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-slate-100 flex items-center justify-center min-h-screen p-4">
+
+    <div id="app-container" class="w-full max-w-md mx-auto bg-white rounded-2xl shadow-lg p-6 md:p-8 space-y-6">
+        
+        <div class="text-center">
+            <img src="https://res.cloudinary.com/dxeram9ta/image/upload/v1753808875/logo_semesta_baru-removebg-preview_xhhqoz.png" alt="Logo Semesta Cafe" class="w-32 mx-auto mb-4">
+            <h1 class="text-3xl font-bold text-gray-800">Absensi Karyawan</h1>
+            <p class="text-gray-500">Semesta Cafe</p>
+        </div>
+
+        <!-- Notifikasi -->
+        <div id="notification" class="hidden p-4 rounded-md text-sm font-medium"></div>
+
+        <!-- Form Awal: Pilih Nama -->
+        <div id="name-selection-view" class="space-y-4">
+            <select id="employee-name" class="w-full p-3 border border-gray-300 rounded-lg text-lg">
+                <option value="">-- Pilih Nama Anda --</option>
+                <!-- Nama karyawan akan dimuat di sini -->
+            </select>
+            <button id="check-status-btn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 text-lg disabled:bg-blue-400">
+                Lanjutkan
+            </button>
+        </div>
+
+        <!-- Tampilan Absen Masuk -->
+        <div id="clock-in-view" class="hidden space-y-4">
+            <p class="text-center">Halo, <strong id="greeting-name-in"></strong>! Silakan ambil foto selfie untuk absen masuk.</p>
+            <div class="relative">
+                <video id="video-in" playsinline autoplay muted class="w-full h-auto bg-gray-200"></video>
+                <canvas id="canvas-in" class="hidden"></canvas>
+            </div>
+            <button id="capture-in-btn" class="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 text-lg disabled:bg-green-400">
+                Ambil Foto & Absen Masuk
+            </button>
+             <button id="back-to-name-btn-1" class="w-full bg-gray-500 text-white font-bold py-2 px-3 rounded-lg hover:bg-gray-600 text-sm">
+                Kembali
+            </button>
+        </div>
+
+        <!-- Tampilan Absen Pulang -->
+        <div id="clock-out-view" class="hidden space-y-4">
+            <p class="text-center">Selamat bekerja, <strong id="greeting-name-out"></strong>!</p>
+            <div id="clock-in-info" class="text-center bg-green-100 p-3 rounded-lg text-green-800">
+                <!-- Info jam masuk akan ditampilkan di sini -->
+            </div>
+            <button id="clock-out-btn" class="w-full bg-red-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 text-lg disabled:bg-red-400">
+                Absen Pulang
+            </button>
+             <button id="back-to-name-btn-2" class="w-full bg-gray-500 text-white font-bold py-2 px-3 rounded-lg hover:bg-gray-600 text-sm">
+                Ganti Nama
+            </button>
+        </div>
+
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, doc, addDoc, onSnapshot, query, where, getDocs, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Konfigurasi Firebase ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyB8xtJNjPYpIdDZfeqWHNdDXqhDwx7WIpg",
+            authDomain: "tracking-bm-kopi.firebaseapp.com",
+            projectId: "tracking-bm-kopi",
+            storageBucket: "tracking-bm-kopi.firebasestorage.app",
+            messagingSenderId: "909405842904",
+            appId: "1:909405842904:web:3a188f777f0d5a98d956ad"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const appId = firebaseConfig.projectId;
+
+        // --- Variabel Global & Elemen DOM ---
+        let currentStream;
+        let currentAttendanceId = null;
+        const employeeSelect = document.getElementById('employee-name');
+        
+        const nameView = document.getElementById('name-selection-view');
+        const clockInView = document.getElementById('clock-in-view');
+        const clockOutView = document.getElementById('clock-out-view');
+
+        const videoIn = document.getElementById('video-in');
+        const canvasIn = document.getElementById('canvas-in');
+        
+        const notificationEl = document.getElementById('notification');
+        const checkStatusBtn = document.getElementById('check-status-btn');
+        const captureInBtn = document.getElementById('capture-in-btn');
+        const clockOutBtn = document.getElementById('clock-out-btn');
+
+        // --- Fungsi-fungsi Aplikasi ---
+
+        function showNotification(message, type = 'info') {
+            notificationEl.textContent = message;
+            notificationEl.classList.remove('hidden', 'bg-green-100', 'text-green-800', 'bg-red-100', 'text-red-800');
+            if (type === 'success') {
+                notificationEl.classList.add('bg-green-100', 'text-green-800');
+            } else if (type === 'error') {
+                 notificationEl.classList.add('bg-red-100', 'text-red-800');
+            }
+            setTimeout(() => notificationEl.classList.add('hidden'), 4000);
+        }
+
+        async function loadEmployees() {
+            let employees = [];
+            const INITIAL_EMPLOYEES = ["Gigih", "Fajar", "Pandu", "Ade"];
+
+            try {
+                const employeesCollection = collection(db, `artifacts/${appId}/public/data/employees`);
+                const q = query(employeesCollection);
+                const querySnapshot = await getDocs(q);
+                employees = querySnapshot.docs.map(doc => doc.data().name);
+            } catch (error) {
+                console.error("Gagal mengambil data karyawan dari database:", error);
+                showNotification("Gagal memuat data karyawan, menggunakan daftar default.", "error");
+            }
+            
+            const employeeSet = new Set([...employees, ...INITIAL_EMPLOYEES]);
+            const sortedEmployees = Array.from(employeeSet).sort();
+
+            employeeSelect.innerHTML = '<option value="">-- Pilih Nama Anda --</option>';
+
+            sortedEmployees.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                employeeSelect.appendChild(option);
+            });
+        }
+
+        function switchView(view) {
+            nameView.classList.add('hidden');
+            clockInView.classList.add('hidden');
+            clockOutView.classList.add('hidden');
+            stopCamera();
+            
+            if (view === 'name') nameView.classList.remove('hidden');
+            if (view === 'clock-in') {
+                clockInView.classList.remove('hidden');
+                startCamera('in');
+            }
+            if (view === 'clock-out') clockOutView.classList.remove('hidden');
+        }
+
+        async function startCamera(type) {
+            const videoEl = type === 'in' ? videoIn : null;
+            if (!videoEl) return;
+
+            try {
+                if (currentStream) {
+                    currentStream.getTracks().forEach(track => track.stop());
+                }
+                currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+                videoEl.srcObject = currentStream;
+            } catch (err) {
+                console.error("Error accessing camera: ", err);
+                showNotification("Tidak bisa mengakses kamera. Mohon izinkan akses kamera di browser Anda.", "error");
+            }
+        }
+
+        function stopCamera() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+        }
+        
+        function takePicture(type) {
+            const videoEl = type === 'in' ? videoIn : null;
+            const canvasEl = type === 'in' ? canvasIn : null;
+            if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
+
+            const context = canvasEl.getContext('2d');
+            canvasEl.width = videoEl.videoWidth;
+            canvasEl.height = videoEl.videoHeight;
+            context.drawImage(videoEl, 0, 0, videoEl.videoWidth, videoEl.videoHeight);
+            return canvasEl.toDataURL('image/jpeg', 0.7); // Kompresi gambar
+        }
+
+        checkStatusBtn.addEventListener('click', async () => {
+            const name = employeeSelect.value;
+            if (!name) {
+                showNotification("Silakan pilih nama Anda terlebih dahulu.", "error");
+                return;
+            }
+
+            checkStatusBtn.disabled = true;
+            checkStatusBtn.textContent = "Memeriksa...";
+
+            try {
+                const today = new Date();
+                const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+
+                const absensiCollection = collection(db, `artifacts/${appId}/public/data/absensiKaryawan`);
+                const q = query(absensiCollection, 
+                    where("employeeName", "==", name),
+                    where("clockInTime", ">=", startOfDay),
+                    where("clockInTime", "<=", endOfDay)
+                );
+
+                const querySnapshot = await getDocs(q);
+
+                if (querySnapshot.empty) {
+                    document.getElementById('greeting-name-in').textContent = name;
+                    switchView('clock-in');
+                } else {
+                    const attendanceDoc = querySnapshot.docs[0];
+                    currentAttendanceId = attendanceDoc.id;
+                    const data = attendanceDoc.data();
+
+                    if (data.clockOutTime) {
+                        showNotification("Anda sudah melakukan absen masuk dan pulang hari ini.", "success");
+                    } else {
+                        document.getElementById('greeting-name-out').textContent = name;
+                        const clockInDate = data.clockInTime.toDate();
+                        document.getElementById('clock-in-info').innerHTML = `Anda absen masuk pada: <strong>${clockInDate.toLocaleTimeString('id-ID')}</strong>`;
+                        switchView('clock-out');
+                    }
+                }
+            } catch (error) {
+                console.error("Error checking status:", error);
+                showNotification("Gagal memeriksa status absensi. Coba lagi.", "error");
+            } finally {
+                checkStatusBtn.disabled = false;
+                checkStatusBtn.textContent = "Lanjutkan";
+            }
+        });
+
+        captureInBtn.addEventListener('click', async () => {
+            captureInBtn.disabled = true;
+            captureInBtn.textContent = "Menyimpan...";
+
+            const name = employeeSelect.value;
+            const photoBase64 = takePicture('in');
+            if (!photoBase64) {
+                showNotification("Gagal mengambil foto. Pastikan kamera berfungsi.", "error");
+                captureInBtn.disabled = false;
+                captureInBtn.textContent = "Ambil Foto & Absen Masuk";
+                return;
+            }
+
+            try {
+                await addDoc(collection(db, `artifacts/${appId}/public/data/absensiKaryawan`), {
+                    employeeName: name,
+                    clockInTime: serverTimestamp(),
+                    clockOutTime: null,
+                    photoIn: photoBase64,
+                    photoOut: null
+                });
+                showNotification("Berhasil absen masuk!", "success");
+                switchView('name');
+                employeeSelect.value = '';
+            } catch (error) {
+                console.error("Error clocking in: ", error);
+                showNotification("Gagal menyimpan data absensi.", "error");
+            } finally {
+                captureInBtn.disabled = false;
+                captureInBtn.textContent = "Ambil Foto & Absen Masuk";
+            }
+        });
+
+        clockOutBtn.addEventListener('click', async () => {
+            if (!currentAttendanceId) {
+                showNotification("ID Absensi tidak ditemukan.", "error");
+                return;
+            }
+            
+            clockOutBtn.disabled = true;
+            clockOutBtn.textContent = "Menyimpan...";
+
+            try {
+                const attendanceDocRef = doc(db, `artifacts/${appId}/public/data/absensiKaryawan`, currentAttendanceId);
+                await updateDoc(attendanceDocRef, {
+                    clockOutTime: serverTimestamp()
+                });
+                showNotification("Berhasil absen pulang!", "success");
+                switchView('name');
+                employeeSelect.value = '';
+            } catch (error) {
+                console.error("Error clocking out: ", error);
+                showNotification("Gagal menyimpan data absen pulang.", "error");
+            } finally {
+                clockOutBtn.disabled = false;
+                clockOutBtn.textContent = "Absen Pulang";
+            }
+        });
+
+        document.getElementById('back-to-name-btn-1').addEventListener('click', () => switchView('name'));
+        document.getElementById('back-to-name-btn-2').addEventListener('click', () => switchView('name'));
+
+        // --- Inisialisasi Aplikasi ---
+        loadEmployees();
+    </script>
+</body>
+</html>
